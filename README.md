@@ -2,25 +2,108 @@
 
 [![npm](https://img.shields.io/npm/v/@anthropic-ai/ai-agent-sdk.svg?style=flat-square)](https://www.npmjs.com/package/@anthropic-ai/ai-agent-sdk) ![Node.js](https://img.shields.io/badge/Node.js-18%2B-brightgreen?style=flat-square) ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
-AI Agent SDK is a multi-model Agent SDK that runs the full agent loop in-process. Build autonomous AI agents powered by **Claude, Gemini, GPT, DeepSeek, and 100+ models** — with the same 61+ built-in tools (file edit, shell, search, web, MCP, and more).
+A multi-model agent SDK for building autonomous AI agents. Use **Claude, Gemini, GPT, DeepSeek, or 100+ other models** to drive the same powerful agent loop — with 61+ built-in tools for file editing, shell execution, code search, web access, MCP, and more.
 
-Unlike `@anthropic-ai/claude-agent-sdk` which requires a local CLI process and is Claude-only, **AI Agent SDK runs in-process with any model** — deploy anywhere: cloud servers, serverless functions, Docker containers, CI/CD pipelines.
+## Motivation
 
-## Get started
+This project was inspired by Anthropic's official [`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript). The official SDK is excellent but has two limitations: it requires spawning a local CLI subprocess, and it only supports Claude models.
+
+We wanted an SDK that:
+- **Runs the full agent loop in-process** — no subprocess, deploy anywhere (serverless, Docker, CI/CD)
+- **Supports any LLM** — swap between Claude, Gemini, GPT, DeepSeek, or local models with one line
+- **Keeps 100% of the agentic capabilities** — tools, permissions, memory, context compression, multi-agent, MCP
+
+## Quick start
 
 ```sh
 npm install @anthropic-ai/ai-agent-sdk
 ```
 
-Set your API key:
+### With Claude
 
-```sh
-export ANTHROPIC_API_KEY=your-api-key
+```typescript
+import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+
+const agent = createAgent({
+  model: 'claude-sonnet-4-6',
+  env: { ANTHROPIC_API_KEY: 'your-key' },
+})
+const result = await agent.prompt('Read package.json and tell me the project name')
+console.log(result.text)
 ```
 
-## Quick start
+### With Gemini
 
-### One-shot query (compatible with official SDK)
+```typescript
+const agent = createAgent({
+  model: 'gemini-2.5-flash',
+  env: { GEMINI_API_KEY: 'your-key' },
+})
+const result = await agent.prompt('Find all TODO comments in this codebase')
+console.log(result.text)
+```
+
+### With any OpenAI-compatible API
+
+```typescript
+// OpenAI
+createAgent({ model: 'gpt-4o', env: { OPENAI_API_KEY: 'key' } })
+
+// DeepSeek
+createAgent({ model: 'deepseek-chat', env: { DEEPSEEK_API_KEY: 'key' } })
+
+// Groq
+createAgent({ model: 'llama-3.3-70b-versatile', env: { GROQ_API_KEY: 'key' } })
+
+// Ollama (local)
+createAgent({ model: 'ollama/llama3', env: { OLLAMA_BASE_URL: 'http://localhost:11434/v1' } })
+
+// Any OpenAI-compatible endpoint
+createAgent({ model: 'openai-compat/my-model', env: { OPENAI_API_KEY: 'key', OPENAI_BASE_URL: 'https://my-api.com/v1' } })
+```
+
+All models share the same 61+ built-in tools. The provider layer handles format translation transparently.
+
+## Supported providers
+
+| Provider | Models | Auth |
+|----------|--------|------|
+| **Anthropic** | `claude-*` | `ANTHROPIC_API_KEY` |
+| **Google Gemini** | `gemini-*` (native `@google/genai` SDK) | `GEMINI_API_KEY` |
+| **Google Vertex AI** | `gemini-*` via Vertex | `GOOGLE_CLOUD_PROJECT` + ADC |
+| **OpenAI** | `gpt-*`, `o1-*`, `o3-*`, `o4-*` | `OPENAI_API_KEY` |
+| **DeepSeek** | `deepseek-*` | `DEEPSEEK_API_KEY` |
+| **Groq** | `llama-*`, `mixtral-*`, `qwen-*` | `GROQ_API_KEY` |
+| **Mistral** | `mistral-*`, `codestral-*` | `MISTRAL_API_KEY` |
+| **Ollama** | `ollama/*` (any local model) | `OLLAMA_BASE_URL` |
+| **Custom** | `openai-compat/*` | `OPENAI_API_KEY` + `OPENAI_BASE_URL` |
+
+## API
+
+### `createAgent(options)`
+
+Create a reusable agent with persistent session state.
+
+```typescript
+const agent = createAgent({ model: 'gemini-2.5-pro' })
+
+// Blocking
+const result = await agent.prompt('Explain the architecture of this project')
+console.log(result.text)
+
+// Streaming
+for await (const event of agent.query('Refactor the error handling')) {
+  // handle streaming events
+}
+
+// Session persists across calls
+agent.getMessages()  // conversation history
+agent.clear()        // reset
+```
+
+### `query({ prompt, options })`
+
+One-shot query, compatible with the official `claude-agent-sdk` API.
 
 ```typescript
 import { query } from '@anthropic-ai/ai-agent-sdk'
@@ -28,231 +111,41 @@ import { query } from '@anthropic-ai/ai-agent-sdk'
 for await (const message of query({
   prompt: 'Find and fix the bug in auth.py',
   options: {
+    model: 'gemini-2.5-flash',
     allowedTools: ['Read', 'Edit', 'Bash'],
-    permissionMode: 'acceptEdits',
   },
 })) {
-  if (message.type === 'assistant' && message.message?.content) {
+  if (message.type === 'assistant') {
     for (const block of message.message.content) {
       if ('text' in block) console.log(block.text)
-      else if ('name' in block) console.log(`Tool: ${block.name}`)
     }
-  } else if (message.type === 'result') {
-    console.log(`Done: ${message.subtype}`)
   }
 }
 ```
-
-### Simple prompt (blocking)
-
-```typescript
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
-
-const agent = createAgent({ model: 'claude-sonnet-4-6' })
-const result = await agent.prompt('Read package.json and tell me the project name')
-
-console.log(result.text)
-console.log(`Tokens: ${result.usage.input_tokens + result.usage.output_tokens}`)
-```
-
-### Multi-turn session
-
-```typescript
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
-
-const agent = createAgent({
-  model: 'claude-sonnet-4-6',
-  systemPrompt: 'You are a senior software engineer. Be concise.',
-})
-
-const r1 = await agent.prompt('Read the main entry point and explain the architecture')
-console.log(r1.text)
-
-// Full context from turn 1 is preserved
-const r2 = await agent.prompt('Now refactor the error handling')
-console.log(r2.text)
-```
-
-### Custom tools
-
-```typescript
-import { createAgent, getAllBaseTools } from '@anthropic-ai/ai-agent-sdk'
-
-const weatherTool = {
-  name: 'GetWeather',
-  description: 'Get weather for a city',
-  inputJSONSchema: {
-    type: 'object',
-    properties: { city: { type: 'string' } },
-    required: ['city'],
-  },
-  get inputSchema() { return { safeParse: (v) => ({ success: true, data: v }) } },
-  async prompt() { return this.description },
-  async call(input) { return { data: `Weather in ${input.city}: 22°C, sunny` } },
-  userFacingName: () => 'GetWeather',
-  isReadOnly: () => true,
-  isConcurrencySafe: () => true,
-  mapToolResultToToolResultBlockParam: (data, id) => ({
-    type: 'tool_result', tool_use_id: id, content: data,
-  }),
-}
-
-const agent = createAgent({
-  tools: [...getAllBaseTools(), weatherTool],
-})
-
-const result = await agent.prompt('What is the weather in Tokyo?')
-```
-
-### Multi-model support
-
-Use Gemini, OpenAI, DeepSeek, Groq, Mistral, Ollama, or any OpenAI-compatible API — all 61+ built-in tools work unchanged.
-
-```typescript
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
-
-// Google Gemini (native @google/genai SDK)
-const gemini = createAgent({
-  model: 'gemini-2.5-flash',
-  env: { GEMINI_API_KEY: 'your-key' },
-})
-
-// Google Vertex AI
-const vertex = createAgent({
-  model: 'gemini-2.5-pro',
-  env: { GOOGLE_VERTEX_AI: 'true', GOOGLE_CLOUD_PROJECT: 'my-project' },
-})
-
-// OpenAI
-const openai = createAgent({
-  model: 'gpt-4o',
-  env: { OPENAI_API_KEY: 'your-key' },
-})
-
-// DeepSeek
-const deepseek = createAgent({
-  model: 'deepseek-chat',
-  env: { DEEPSEEK_API_KEY: 'your-key' },
-})
-
-// Ollama (local)
-const ollama = createAgent({
-  model: 'ollama/llama3',
-  env: { OLLAMA_BASE_URL: 'http://localhost:11434/v1' },
-})
-
-// Any OpenAI-compatible API
-const custom = createAgent({
-  model: 'openai-compat/my-model',
-  env: { OPENAI_API_KEY: 'key', OPENAI_BASE_URL: 'https://my-api.com/v1' },
-})
-
-const result = await gemini.prompt('Find and fix the bug in auth.py')
-```
-
-### MCP server integration
-
-```typescript
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
-
-const agent = createAgent({
-  mcpServers: {
-    filesystem: {
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
-    },
-    playwright: {
-      command: 'npx',
-      args: ['@playwright/mcp@latest'],
-    },
-  },
-})
-
-const result = await agent.prompt('List files in /tmp')
-```
-
-### Subagents
-
-```typescript
-import { query } from '@anthropic-ai/ai-agent-sdk'
-
-for await (const message of query({
-  prompt: 'Use the code-reviewer agent to review this codebase',
-  options: {
-    allowedTools: ['Read', 'Glob', 'Grep', 'Agent'],
-    agents: {
-      'code-reviewer': {
-        description: 'Expert code reviewer for quality and security.',
-        prompt: 'Analyze code quality and suggest improvements.',
-        tools: ['Read', 'Glob', 'Grep'],
-      },
-    },
-  },
-})) {
-  // handle messages...
-}
-```
-
-### Permissions
-
-```typescript
-import { query } from '@anthropic-ai/ai-agent-sdk'
-
-// Read-only agent: can only analyze, not modify
-for await (const message of query({
-  prompt: 'Review this code for best practices',
-  options: {
-    allowedTools: ['Read', 'Glob', 'Grep'],
-  },
-})) {
-  // ...
-}
-```
-
-## API reference
-
-### `query({ prompt, options })`
-
-Top-level entry point, compatible with `@anthropic-ai/claude-agent-sdk`. Returns an `AsyncGenerator<SDKMessage>`.
-
-### `createAgent(options)`
-
-Create a reusable agent with persistent session state.
-
-- `agent.query(prompt)` — streaming response (`AsyncGenerator`)
-- `agent.prompt(prompt)` — blocking response (`Promise<QueryResult>`)
-- `agent.getMessages()` — conversation history
-- `agent.clear()` — reset session
 
 ### Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `model` | `string` | `claude-sonnet-4-6` | Model ID (Claude, Gemini, GPT, DeepSeek, etc.) |
-| `apiKey` | `string` | `env.ANTHROPIC_API_KEY` | API key |
-| `baseURL` | `string` | Anthropic API | API base URL (for third-party providers) |
+| `model` | `string` | `claude-sonnet-4-6` | Model ID — any supported provider |
+| `apiKey` | `string` | `env.ANTHROPIC_API_KEY` | API key (Anthropic) |
 | `cwd` | `string` | `process.cwd()` | Working directory for tools |
 | `systemPrompt` | `string` | — | Custom system prompt |
 | `tools` | `Tool[]` | All built-in | Available tools |
 | `allowedTools` | `string[]` | — | Tool whitelist (e.g. `['Read', 'Glob']`) |
 | `permissionMode` | `string` | `bypassPermissions` | `acceptEdits` / `bypassPermissions` / `plan` / `default` |
 | `maxTurns` | `number` | `100` | Max agentic turns |
-| `maxBudgetUsd` | `number` | — | Max USD spend |
 | `mcpServers` | `object` | — | MCP server configurations |
 | `agents` | `object` | — | Custom subagent definitions |
-| `hooks` | `object` | — | Lifecycle hooks (PreToolUse, PostToolUse, Stop, etc.) |
 | `thinking` | `object` | — | Extended thinking configuration |
-| `env` | `object` | — | Environment variables (compatible with official SDK) |
-| `resume` | `string` | — | Resume a previous session by ID |
-| `canUseTool` | `function` | — | Custom permission callback |
-| `includePartialMessages` | `boolean` | `false` | Include raw streaming events |
+| `env` | `object` | — | Environment variables for provider auth |
+| `geminiGrounding` | `boolean` | — | Enable Google Search grounding (Gemini only) |
 
 ### Environment variables
 
 | Variable | Provider | Description |
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic | Claude API key |
-| `ANTHROPIC_BASE_URL` | Anthropic | API base URL override |
 | `ANTHROPIC_MODEL` | Anthropic | Default model |
 | `GEMINI_API_KEY` | Gemini | Google AI API key |
 | `GOOGLE_CLOUD_PROJECT` | Vertex AI | GCP project ID |
@@ -264,8 +157,6 @@ Create a reusable agent with persistent session state.
 | `GROQ_API_KEY` | Groq | Groq API key |
 | `MISTRAL_API_KEY` | Mistral | Mistral API key |
 | `OLLAMA_BASE_URL` | Ollama | Ollama URL (default: `http://localhost:11434/v1`) |
-
-Also supports `options.env` for passing environment variables programmatically, same as the official SDK.
 
 ## Built-in tools
 
@@ -281,73 +172,95 @@ Also supports `options.env` for passing environment variables programmatically, 
 | `WebSearch` | Search the web |
 | `Agent` | Spawn subagents for parallel work |
 | `NotebookEdit` | Edit Jupyter notebooks |
-| `Skill` | Invoke custom skills |
-| `AskUserQuestion` | Ask the user clarifying questions |
-| `TodoWrite` | Create/manage todo lists |
-| `ToolSearch` | Search available tools |
-| `SendMessage` | Send messages to agents/teammates |
-| `TeamCreate` / `TeamDelete` | Create/delete agent teams |
-| `EnterPlanMode` / `ExitPlanMode` | Plan approval mode |
+| `SendMessage` | Inter-agent messaging |
+| `TeamCreate` / `TeamDelete` | Multi-agent teams |
 | `EnterWorktree` / `ExitWorktree` | Git worktree isolation |
 | `ListMcpResources` / `ReadMcpResource` | MCP resource access |
-| `TaskCreate` / `TaskUpdate` / `TaskList` / `TaskGet` / `TaskStop` / `TaskOutput` | Task management |
+| `TaskCreate` / `TaskUpdate` / `TaskList` | Task management |
+
+[See all 61+ tools in the source.](./src/tools)
 
 ## Architecture
 
-The official `@anthropic-ai/claude-agent-sdk` architecture:
+```
+Your code
+    │
+    ▼
+createAgent({ model: 'gemini-2.5-flash' })
+    │
+    ▼
+┌─────────────────────────────┐
+│       QueryEngine           │  ← Full agent loop (in-process)
+│  system prompt, memory,     │
+│  context compression,       │
+│  tool execution, permissions│
+└──────────┬──────────────────┘
+           │
+    ┌──────▼──────┐
+    │  LLMProvider │  ← Provider abstraction layer
+    │   Registry   │
+    └──┬────┬────┬─┘
+       │    │    │
+  Anthropic Gemini OpenAI-compat
+  (native) (native) (universal)
+       │    │    │
+    Claude  Gemini  GPT / DeepSeek /
+                    Groq / Mistral /
+                    Ollama / 100+
+```
 
-```
-Your code → SDK → spawn cli.js subprocess → stdin/stdout JSON → Anthropic API
-```
-
-**AI Agent SDK** runs everything in-process:
-
-```
-Your code → SDK → QueryEngine → Anthropic API (direct)
-```
+The engine uses Anthropic's message format internally. Each provider translates to/from its native format at the API boundary. This means the entire engine (permissions, memory, context compression, multi-agent, MCP) works unchanged regardless of which model you choose.
 
 ### What's under the hood
 
-This SDK contains the **complete Claude Code engine** (2,000+ source files), not a simplified reimplementation:
-
 | Component | Description |
 |-----------|-------------|
-| **System Prompt** | Full prompt construction with static/dynamic boundary caching |
-| **Permission System** | 4-layer pipeline: rules → low-risk skip → whitelist → AI classifier + circuit breaker |
-| **Memory System** | Auto-memory with 4 types (user/feedback/project/reference), autoDream background organizer |
-| **Context Compression** | 9-segment structured extraction (autocompact, microcompact, snip compact) |
-| **Multi-Agent** | Leader/Teammate teams, Git worktree isolation, permission bubbling, async mailbox |
-| **MCP Client** | Full MCP support: stdio, SSE, HTTP transports |
-| **Search** | ripgrep + glob (same as Claude Code — no vector DB needed) |
-| **Tool Execution** | Concurrent batching for read-only tools, serial for mutations |
-| **API Client** | Streaming, retry with exponential backoff, fallback models, prompt caching |
+| **Provider Layer** | Pluggable LLM providers with auto-routing by model name |
+| **System Prompt** | Full prompt construction with boundary caching |
+| **Permission System** | 4-layer pipeline: rules, low-risk skip, whitelist, AI classifier |
+| **Memory System** | Auto-memory with 4 types, background organizer |
+| **Context Compression** | 9-segment structured extraction |
+| **Multi-Agent** | Leader/Teammate teams, Git worktree isolation |
+| **MCP Client** | stdio, SSE, HTTP transports |
+| **Tool Execution** | Concurrent batching for read-only, serial for mutations |
 
-## Comparison with `@anthropic-ai/claude-agent-sdk`
+## Custom providers
 
-| | Official SDK | AI Agent SDK |
-|---|---|---|
-| **Architecture** | Spawns local CLI subprocess | In-process agent loop |
-| **Cloud deployment** | Requires CLI installed | Works anywhere |
-| **Serverless** | Not supported | Fully supported |
-| **Docker** | Needs CLI in image | Just `npm install` |
-| **Multi-model** | Claude only | Claude, Gemini, GPT, DeepSeek, Groq, Mistral, Ollama, 100+ |
-| **API surface** | `query()`, `tool()`, sessions | `query()`, `createAgent()`, sessions |
-| **Built-in tools** | 26 tools | 26 tools (same set, any model) |
-| **System prompt** | Full engine | Full engine (same code) |
-| **Permission system** | 4-layer + AI classifier | 4-layer + AI classifier (same code) |
-| **Memory system** | Auto-memory + autoDream | Auto-memory + autoDream (same code) |
-| **Context compression** | 9-segment structured | 9-segment structured (same code) |
-| **Multi-agent** | Teams, worktrees | Teams, worktrees (same code) |
-| **MCP support** | Full | Full (same code) |
-| **Custom tools** | Via MCP | Native function tools + MCP |
-| **Streaming** | Via subprocess stdio | Direct API streaming |
+Register your own LLM provider:
+
+```typescript
+import { registerProvider, type LLMProvider } from '@anthropic-ai/ai-agent-sdk'
+
+class MyProvider implements LLMProvider {
+  readonly type = 'openai-compat' as const
+  supportsModel(model: string) { return model.startsWith('my-') }
+  async createMessage(params) { /* ... */ }
+  async *createMessageStream(params) { /* ... */ }
+}
+
+registerProvider(new MyProvider())
+```
+
+All inputs and outputs use Anthropic message format. Your provider handles translation internally.
+
+## MCP integration
+
+```typescript
+const agent = createAgent({
+  model: 'gemini-2.5-flash',
+  mcpServers: {
+    filesystem: {
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+    },
+  },
+})
+```
 
 ## Examples
 
-See the [`examples/`](./examples) directory:
-
-| # | Example | What it demonstrates |
-|---|---------|---------------------|
+| # | Example | Description |
+|---|---------|-------------|
 | 01 | [Simple Query](./examples/01-simple-query.ts) | Streaming with `createAgent().query()` |
 | 02 | [Multi-Tool](./examples/02-multi-tool.ts) | Glob + Bash orchestration |
 | 03 | [Multi-Turn](./examples/03-multi-turn.ts) | Session persistence across turns |
@@ -355,21 +268,19 @@ See the [`examples/`](./examples) directory:
 | 05 | [System Prompt](./examples/05-custom-system-prompt.ts) | Custom system prompt |
 | 06 | [MCP Server](./examples/06-mcp-server.ts) | MCP stdio transport |
 | 07 | [Custom Tools](./examples/07-custom-tools.ts) | User-defined tools |
-| 08 | [Official API](./examples/08-official-api-compat.ts) | `query()` drop-in compatible |
+| 08 | [Official API Compat](./examples/08-official-api-compat.ts) | `query()` drop-in compatible |
 | 09 | [Subagents](./examples/09-subagents.ts) | Agent delegation |
 | 10 | [Permissions](./examples/10-permissions.ts) | Read-only agent |
-| 11 | [Gemini Basic](./examples/11-gemini-basic.ts) | Gemini as base model |
-| 12 | [Gemini Vertex AI](./examples/12-gemini-vertex-ai.ts) | Vertex AI auth |
-
-Run any example:
+| 11 | [Gemini](./examples/11-gemini-basic.ts) | Gemini as base model |
+| 12 | [Vertex AI](./examples/12-gemini-vertex-ai.ts) | Vertex AI authentication |
 
 ```sh
-npx tsx examples/01-simple-query.ts
+npx tsx examples/11-gemini-basic.ts
 ```
 
-## Reporting bugs
+## Acknowledgments
 
-File issues at [github.com/Nordinian/ai-agent-sdk/issues](https://github.com/Nordinian/ai-agent-sdk/issues).
+This project was inspired by and builds upon the architecture of [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript). We extend it with a multi-model provider layer that enables the same agentic capabilities across different LLM providers.
 
 ## License
 
