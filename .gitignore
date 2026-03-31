@@ -33,7 +33,8 @@ npm-debug.log*
 # Original source reference (not for distribution)
 claude-code-sourcecode/
 
-# Research artifacts
+# Internal docs and research (not for distribution)
+docs/
 research/
 
 # Lock file (optional: include if you want reproducible builds)
