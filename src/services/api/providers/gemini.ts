@@ -1,0 +1,443 @@
+// @ts-nocheck
+/**
+ * GeminiProvider — Native Google Gemini LLM provider.
+ *
+ * Uses @google/genai SDK to connect to Gemini API (API key) or Vertex AI
+ * (service account). Translates between Anthropic message format (SDK internal)
+ * and Gemini's native format.
+ *
+ * Reference implementations:
+ *   - gemini-cli: /packages/core/src/core/contentGenerator.ts
+ *   - adk-python: /src/google/adk/models/google_llm.py
+ */
+
+import type { LLMProvider, LLMCreateParams, LLMResponse, LLMStreamEvent } from '../provider.js'
+import {
+  toGeminiContents,
+  toGeminiSystemInstruction,
+  mapFinishReason,
+  mapUsage,
+  generateMessageId,
+  generateToolUseId,
+  ToolCallIdMap,
+  type GeminiPart,
+} from './gemini-translator.js'
+import { toGeminiFunctionDeclarations } from './gemini-tool-translator.js'
+
+// ============================================================================
+// Safety settings — Agent mode requires the most permissive settings.
+// Code operations and shell commands would otherwise be blocked.
+// (Same approach as gemini-cli)
+// ============================================================================
+
+const AGENT_SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+]
+
+// ============================================================================
+// Gemini model context window limits
+// ============================================================================
+
+const GEMINI_MODEL_LIMITS: Record<string, number> = {
+  'gemini-2.5-pro': 1_048_576,
+  'gemini-2.5-flash': 1_048_576,
+  'gemini-2.5-flash-lite': 262_144,
+  'gemini-2.0-flash': 1_048_576,
+  'gemini-2.0-flash-lite': 262_144,
+}
+
+// ============================================================================
+// GeminiProvider
+// ============================================================================
+
+export class GeminiProvider implements LLMProvider {
+  readonly type = 'gemini' as const
+  private clientInstance: any = null
+  private toolCallIdMap = new ToolCallIdMap()
+
+  supportsModel(model: string): boolean {
+    return /^(gemini-|vertex\/)/.test(model)
+  }
+
+  /**
+   * Lazily create the @google/genai client.
+   * Supports both Gemini API (API key) and Vertex AI (service account).
+   */
+  private async getClient(): Promise<any> {
+    if (this.clientInstance) return this.clientInstance
+
+    // Dynamic import to avoid hard dependency when Gemini is not used
+    const { GoogleGenAI } = await import('@google/genai')
+
+    const isVertexAI = process.env.GOOGLE_VERTEX_AI === 'true'
+      || !!process.env.GOOGLE_CLOUD_PROJECT
+
+    this.clientInstance = new GoogleGenAI({
+      apiKey: isVertexAI ? undefined : (process.env.GEMINI_API_KEY || undefined),
+      vertexai: isVertexAI
+        ? {
+            project: process.env.GOOGLE_CLOUD_PROJECT,
+            location: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
+          }
+        : undefined,
+    })
+
+    return this.clientInstance
+  }
+
+  /**
+   * Resolve the actual model name for the API.
+   * Strips prefixes like 'vertex/' if present.
+   */
+  private resolveModelName(model: string): string {
+    return model.replace(/^vertex\//, '')
+  }
+
+  /**
+   * Build Gemini API config from LLMCreateParams.
+   * Centralizes config construction for both streaming and non-streaming calls.
+   * Supports Gemini-specific features via extra params:
+   *   - geminiGrounding: boolean — enable Google Search grounding
+   *   - geminiCachedContent: string — cached content resource name
+   *   - geminiThinkingBudget: number — override thinking token budget
+   *   - geminiResponseMimeType: string — e.g. 'application/json' for structured output
+   *   - geminiResponseSchema: object — JSON schema for structured output
+   */
+  private buildConfig(params: LLMCreateParams, tools: any[]) {
+    const systemInstruction = toGeminiSystemInstruction(params.system)
+
+    // Thinking config: explicit geminiThinkingBudget > Anthropic thinking > default
+    const thinkingBudget = (params as any).geminiThinkingBudget
+      ?? params.thinking?.budget_tokens
+      ?? undefined
+
+    // Google Search grounding
+    const googleSearch = (params as any).geminiGrounding
+      ? [{ googleSearch: {} }]
+      : undefined
+
+    // Build tools array: function declarations + optional google search
+    const toolsConfig: any[] = []
+    if (tools.length > 0) {
+      toolsConfig.push({ functionDeclarations: tools })
+    }
+    if (googleSearch) {
+      toolsConfig.push(...googleSearch)
+    }
+
+    return {
+      systemInstruction,
+      tools: toolsConfig.length > 0 ? toolsConfig : undefined,
+      maxOutputTokens: params.max_tokens,
+      temperature: params.temperature,
+      safetySettings: AGENT_SAFETY_SETTINGS,
+      ...(thinkingBudget ? { thinkingConfig: { thinkingBudget } } : {}),
+      ...((params as any).geminiCachedContent
+        ? { cachedContent: (params as any).geminiCachedContent }
+        : {}),
+      ...((params as any).geminiResponseMimeType
+        ? { responseMimeType: (params as any).geminiResponseMimeType }
+        : {}),
+      ...((params as any).geminiResponseSchema
+        ? { responseSchema: (params as any).geminiResponseSchema }
+        : {}),
+    }
+  }
+
+  /**
+   * Non-streaming message creation.
+   * Translates request/response between Anthropic and Gemini formats.
+   */
+  async createMessage(params: LLMCreateParams): Promise<LLMResponse> {
+    const client = await this.getClient()
+    const model = this.resolveModelName(params.model)
+
+    const contents = toGeminiContents(params.messages, this.toolCallIdMap)
+    const tools = toGeminiFunctionDeclarations(params.tools ?? [])
+    const config = this.buildConfig(params, tools)
+
+    const response = await client.models.generateContent({
+      model,
+      contents,
+      config,
+    })
+
+    return this.translateCompleteResponse(response, model)
+  }
+
+  /**
+   * Streaming message creation.
+   * Wraps Gemini's chunk stream into Anthropic's fine-grained event protocol.
+   */
+  async *createMessageStream(params: LLMCreateParams): AsyncGenerator<LLMStreamEvent, void, undefined> {
+    const client = await this.getClient()
+    const model = this.resolveModelName(params.model)
+
+    const contents = toGeminiContents(params.messages, this.toolCallIdMap)
+    const tools = toGeminiFunctionDeclarations(params.tools ?? [])
+    const config = this.buildConfig(params, tools)
+
+    let stream: AsyncIterable<any>
+    try {
+      const result = await client.models.generateContentStream({
+        model,
+        contents,
+        config,
+      })
+      stream = result
+    } catch (error: any) {
+      throw this.toAnthropicError(error)
+    }
+
+    // ── Translate Gemini chunks → Anthropic stream events ──
+
+    const messageId = generateMessageId()
+    let contentIndex = 0
+    let hasEmittedStart = false
+    let totalUsage = { input_tokens: 0, output_tokens: 0 }
+    let functionCallCount = 0
+
+    try {
+      for await (const chunk of stream) {
+        // 1. Emit message_start on first chunk
+        if (!hasEmittedStart) {
+          yield {
+            type: 'message_start',
+            message: {
+              id: messageId,
+              type: 'message',
+              role: 'assistant',
+              model,
+              content: [],
+              stop_reason: null,
+              stop_sequence: null,
+              usage: { input_tokens: 0, output_tokens: 0 },
+            },
+          } as any
+          hasEmittedStart = true
+        }
+
+        // 2. Process each part in this chunk
+        const parts: GeminiPart[] = chunk.candidates?.[0]?.content?.parts ?? []
+
+        for (const part of parts) {
+          // ── Text content ──
+          if (part.text !== undefined && !part.thought) {
+            yield {
+              type: 'content_block_start',
+              index: contentIndex,
+              content_block: { type: 'text', text: '' },
+            } as any
+            yield {
+              type: 'content_block_delta',
+              index: contentIndex,
+              delta: { type: 'text_delta', text: part.text },
+            } as any
+            yield {
+              type: 'content_block_stop',
+              index: contentIndex,
+            } as any
+            contentIndex++
+          }
+
+          // ── Thinking content ──
+          if (part.thought && part.text) {
+            yield {
+              type: 'content_block_start',
+              index: contentIndex,
+              content_block: { type: 'thinking', thinking: '' },
+            } as any
+            yield {
+              type: 'content_block_delta',
+              index: contentIndex,
+              delta: { type: 'thinking_delta', thinking: part.text },
+            } as any
+            yield {
+              type: 'content_block_stop',
+              index: contentIndex,
+            } as any
+            contentIndex++
+          }
+
+          // ── Function call ──
+          if (part.functionCall) {
+            functionCallCount++
+            const toolUseId = generateToolUseId()
+
+            // Record in the id↔name map for future tool_result translation
+            this.toolCallIdMap.record(toolUseId, part.functionCall.name)
+
+            yield {
+              type: 'content_block_start',
+              index: contentIndex,
+              content_block: {
+                type: 'tool_use',
+                id: toolUseId,
+                name: part.functionCall.name,
+                input: {},
+              },
+            } as any
+            yield {
+              type: 'content_block_delta',
+              index: contentIndex,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(part.functionCall.args ?? {}),
+              },
+            } as any
+            yield {
+              type: 'content_block_stop',
+              index: contentIndex,
+            } as any
+            contentIndex++
+          }
+        }
+
+        // 3. Track usage
+        if (chunk.usageMetadata) {
+          totalUsage = mapUsage(chunk.usageMetadata)
+        }
+
+        // 4. Check for finish
+        const finishReason = chunk.candidates?.[0]?.finishReason
+        if (finishReason) {
+          const stopReason = mapFinishReason(finishReason, functionCallCount > 0)
+          yield {
+            type: 'message_delta',
+            delta: { stop_reason: stopReason, stop_sequence: null },
+            usage: { output_tokens: totalUsage.output_tokens },
+          } as any
+          yield { type: 'message_stop' } as any
+        }
+      }
+
+      // Edge case: stream ended without a finishReason
+      if (hasEmittedStart && contentIndex === 0) {
+        // Empty response — emit a blank text block
+        yield {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        } as any
+        yield {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: '(No response from model)' },
+        } as any
+        yield { type: 'content_block_stop', index: 0 } as any
+        yield {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 0 },
+        } as any
+        yield { type: 'message_stop' } as any
+      }
+    } catch (error: any) {
+      throw this.toAnthropicError(error)
+    }
+  }
+
+  /**
+   * Translate a complete (non-streaming) Gemini response to Anthropic format.
+   */
+  private translateCompleteResponse(response: any, model: string): LLMResponse {
+    const candidate = response.candidates?.[0]
+    const parts: GeminiPart[] = candidate?.content?.parts ?? []
+    const content: any[] = []
+    let hasFunctionCalls = false
+
+    for (const part of parts) {
+      if (part.text !== undefined && !part.thought) {
+        content.push({ type: 'text', text: part.text })
+      }
+      if (part.thought && part.text) {
+        content.push({ type: 'thinking', thinking: part.text })
+      }
+      if (part.functionCall) {
+        hasFunctionCalls = true
+        const toolUseId = generateToolUseId()
+        this.toolCallIdMap.record(toolUseId, part.functionCall.name)
+        content.push({
+          type: 'tool_use',
+          id: toolUseId,
+          name: part.functionCall.name,
+          input: part.functionCall.args ?? {},
+        })
+      }
+    }
+
+    const usage = mapUsage(response.usageMetadata)
+    const stopReason = mapFinishReason(candidate?.finishReason, hasFunctionCalls)
+
+    return {
+      id: generateMessageId(),
+      type: 'message',
+      role: 'assistant',
+      model,
+      content,
+      stop_reason: stopReason,
+      stop_sequence: null,
+      usage,
+    } as any
+  }
+
+  /**
+   * Map Gemini errors to Anthropic SDK error format.
+   * This allows the existing withRetry.ts logic to handle them unchanged.
+   */
+  private toAnthropicError(error: any): Error {
+    const status = error.status || error.code || error.httpStatusCode
+    const message = error.message || 'Gemini API error'
+
+    const mapped: any = new Error(`[GeminiProvider] ${message}`)
+    mapped.status = status
+
+    // Map Gemini error codes to Anthropic-compatible status codes
+    switch (status) {
+      case 429:
+      case 'RESOURCE_EXHAUSTED':
+        mapped.status = 429
+        mapped.headers = { 'retry-after': String(error.retryDelay || 30) }
+        break
+      case 503:
+      case 'UNAVAILABLE':
+        mapped.status = 529
+        break
+      case 401:
+      case 'UNAUTHENTICATED':
+        mapped.status = 401
+        break
+      case 403:
+      case 'PERMISSION_DENIED':
+        mapped.status = 403
+        break
+      case 400:
+      case 'INVALID_ARGUMENT':
+        mapped.status = 400
+        if (message.toLowerCase().includes('token')) {
+          mapped.message = `prompt is too long: ${message}`
+        }
+        break
+      case 504:
+      case 'DEADLINE_EXCEEDED':
+        mapped.status = 504
+        break
+      default:
+        mapped.status = typeof status === 'number' ? status : 500
+    }
+
+    mapped.error = { type: 'error', message: mapped.message }
+    return mapped
+  }
+}
+
+/**
+ * Get the context window limit for a Gemini model.
+ */
+export function getGeminiContextLimit(model: string): number {
+  const cleanModel = model.replace(/^vertex\//, '')
+  return GEMINI_MODEL_LIMITS[cleanModel] ?? 1_048_576 // default 1M
+}
