@@ -32,13 +32,19 @@
     "codeany": "./cli.mjs"
   },
   "scripts": {
-    "build": "tsc",
-    "build:cli": "node build.mjs",
+    "build": "bun run build:sdk && bun run build:cli",
+    "build:sdk": "tsc",
+    "build:cli": "bun build.mjs",
     "dev": "bun run src/entrypoints/cli.tsx",
     "dev:watch": "tsc --watch",
-    "test": "node --experimental-vm-modules node_modules/.bin/vitest run",
+    "test": "bun vitest run",
+    "test:watch": "bun vitest",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "bun run build",
+    "publish:npm": "bun publish --access public"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=18.0.0"

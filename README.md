@@ -16,7 +16,8 @@ We wanted an SDK that:
 ## Quick start
 
 ```sh
-npm install @nordinian/ai-agent-sdk
+bun add @nordinian/ai-agent-sdk
+# or: npm install @nordinian/ai-agent-sdk
 ```
 
 ### With Claude
