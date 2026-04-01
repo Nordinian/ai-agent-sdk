@@ -1,6 +1,6 @@
 # AI Agent SDK
 
-[![npm](https://img.shields.io/npm/v/@anthropic-ai/ai-agent-sdk.svg?style=flat-square)](https://www.npmjs.com/package/@anthropic-ai/ai-agent-sdk) ![Node.js](https://img.shields.io/badge/Node.js-18%2B-brightgreen?style=flat-square) ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+[![npm](https://img.shields.io/npm/v/@nordinian/ai-agent-sdk.svg?style=flat-square)](https://www.npmjs.com/package/@nordinian/ai-agent-sdk) ![Node.js](https://img.shields.io/badge/Node.js-18%2B-brightgreen?style=flat-square) ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 A multi-model agent SDK for building autonomous AI agents. Use **Claude, Gemini, GPT, DeepSeek, or 100+ other models** to drive the same powerful agent loop — with 61+ built-in tools for file editing, shell execution, code search, web access, MCP, and more.
 
@@ -16,13 +16,13 @@ We wanted an SDK that:
 ## Quick start
 
 ```sh
-npm install @anthropic-ai/ai-agent-sdk
+npm install @nordinian/ai-agent-sdk
 ```
 
 ### With Claude
 
 ```typescript
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+import { createAgent } from '@nordinian/ai-agent-sdk'
 
 const agent = createAgent({
   model: 'claude-sonnet-4-6',
@@ -106,7 +106,7 @@ agent.clear()        // reset
 One-shot query, compatible with the official `claude-agent-sdk` API.
 
 ```typescript
-import { query } from '@anthropic-ai/ai-agent-sdk'
+import { query } from '@nordinian/ai-agent-sdk'
 
 for await (const message of query({
   prompt: 'Find and fix the bug in auth.py',
@@ -238,7 +238,7 @@ import {
   checkContextOverflow,
   estimateTextTokens,
   getProviderContextWindow,
-} from '@anthropic-ai/ai-agent-sdk'
+} from '@nordinian/ai-agent-sdk'
 
 // Loop detection — detects infinite tool-calling loops
 const detector = new LoopDetector()
@@ -270,7 +270,7 @@ getProviderContextWindow('gpt-4o')                 // 128,000
 Register your own LLM provider:
 
 ```typescript
-import { registerProvider, type LLMProvider } from '@anthropic-ai/ai-agent-sdk'
+import { registerProvider, type LLMProvider } from '@nordinian/ai-agent-sdk'
 
 class MyProvider implements LLMProvider {
   readonly type = 'openai-compat' as const

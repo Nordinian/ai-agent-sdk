@@ -6,7 +6,7 @@
  *
  * Run: npx tsx examples/10-permissions.ts
  */
-import { query } from '@anthropic-ai/ai-agent-sdk'
+import { query } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 10: Read-Only Agent ---\n')

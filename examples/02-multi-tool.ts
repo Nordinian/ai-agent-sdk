@@ -6,7 +6,7 @@
  *
  * Run: npx tsx examples/02-multi-tool.ts
  */
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+import { createAgent } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 2: Multi-Tool Orchestration ---\n')

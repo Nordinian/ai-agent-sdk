@@ -6,7 +6,7 @@
  *
  * Run: npx tsx examples/08-official-api-compat.ts
  */
-import { query } from '@anthropic-ai/ai-agent-sdk'
+import { query } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 8: Official SDK-Compatible API ---\n')

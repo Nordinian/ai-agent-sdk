@@ -6,7 +6,7 @@
  *
  * Run: npx tsx examples/01-simple-query.ts
  */
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+import { createAgent } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 1: Simple Query ---\n')

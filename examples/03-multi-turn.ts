@@ -6,7 +6,7 @@
  *
  * Run: npx tsx examples/03-multi-turn.ts
  */
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+import { createAgent } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 3: Multi-Turn Conversation ---\n')

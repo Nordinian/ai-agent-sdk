@@ -5,7 +5,7 @@
  *
  * Run: npx tsx examples/05-custom-system-prompt.ts
  */
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+import { createAgent } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 5: Custom System Prompt ---\n')

@@ -6,7 +6,7 @@
  *
  * Run: npx tsx examples/04-prompt-api.ts
  */
-import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+import { createAgent } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 4: Simple Prompt API ---\n')

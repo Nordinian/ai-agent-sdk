@@ -5,7 +5,7 @@
  *
  * Run: npx tsx examples/07-custom-tools.ts
  */
-import { createAgent, getAllBaseTools } from '@anthropic-ai/ai-agent-sdk'
+import { createAgent, getAllBaseTools } from '@nordinian/ai-agent-sdk'
 
 /**
  * Helper to create custom tools compatible with the engine.

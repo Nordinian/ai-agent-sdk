@@ -6,7 +6,7 @@
  *
  * Run: npx tsx examples/09-subagents.ts
  */
-import { query } from '@anthropic-ai/ai-agent-sdk'
+import { query } from '@nordinian/ai-agent-sdk'
 
 async function main() {
   console.log('--- Example 9: Subagents ---\n')

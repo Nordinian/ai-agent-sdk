@@ -6,7 +6,7 @@
  * Claude Code engine (QueryEngine, tools, services).
  *
  * Usage:
- *   import { createAgent } from '@anthropic-ai/ai-agent-sdk'
+ *   import { createAgent } from '@nordinian/ai-agent-sdk'
  *
  *   const agent = createAgent({
  *     model: 'claude-sonnet-4-6',
@@ -500,7 +500,7 @@ export function createAgent(options: AgentOptions = {}): Agent {
  *
  * @example
  * ```typescript
- * import { query } from '@anthropic-ai/ai-agent-sdk'
+ * import { query } from '@nordinian/ai-agent-sdk'
  *
  * for await (const message of query({
  *   prompt: 'Find and fix the bug in auth.py',
