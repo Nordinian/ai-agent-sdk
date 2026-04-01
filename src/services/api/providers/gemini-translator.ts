@@ -35,8 +35,11 @@ export interface GeminiPart {
   text?: string
   thought?: boolean
   inlineData?: { mimeType: string; data: string }
+  fileData?: { mimeType: string; fileUri: string }
   functionCall?: { name: string; args: Record<string, unknown> }
   functionResponse?: { name: string; response: Record<string, unknown> }
+  executableCode?: { code: string; language?: string }
+  codeExecutionResult?: { output: string; outcome?: string }
 }
 
 export interface GeminiUsageMetadata {
@@ -169,8 +172,61 @@ function toGeminiParts(
           },
         }]
       }
-      // URL images: convert to text description as fallback
+      if (source?.type === 'url' && source?.url) {
+        return [{ fileData: { mimeType: source.media_type || 'image/jpeg', fileUri: source.url } }]
+      }
       return [{ text: `[Image: ${source?.url || 'unknown'}]` }]
+    }
+
+    case 'document': {
+      // PDF and other documents — Gemini supports inline or URI
+      const source = block.source
+      if (source?.type === 'base64') {
+        return [{
+          inlineData: {
+            mimeType: source.media_type || 'application/pdf',
+            data: source.data,
+          },
+        }]
+      }
+      if (source?.type === 'url' && source?.url) {
+        return [{ fileData: { mimeType: source.media_type || 'application/pdf', fileUri: source.url } }]
+      }
+      return [{ text: `[Document: ${source?.url || 'unknown'}]` }]
+    }
+
+    case 'audio': {
+      // Audio input — Gemini supports inline base64 or file URI
+      const source = block.source
+      if (source?.type === 'base64') {
+        return [{
+          inlineData: {
+            mimeType: source.media_type || 'audio/wav',
+            data: source.data,
+          },
+        }]
+      }
+      if (source?.type === 'url' && source?.url) {
+        return [{ fileData: { mimeType: source.media_type || 'audio/wav', fileUri: source.url } }]
+      }
+      return [{ text: `[Audio: ${source?.url || 'unknown'}]` }]
+    }
+
+    case 'video': {
+      // Video input — Gemini supports file URI (inline too large typically)
+      const source = block.source
+      if (source?.type === 'url' && source?.url) {
+        return [{ fileData: { mimeType: source.media_type || 'video/mp4', fileUri: source.url } }]
+      }
+      if (source?.type === 'base64') {
+        return [{
+          inlineData: {
+            mimeType: source.media_type || 'video/mp4',
+            data: source.data,
+          },
+        }]
+      }
+      return [{ text: `[Video: ${source?.url || 'unknown'}]` }]
     }
 
     default:

@@ -38,6 +38,30 @@ const AGENT_SAFETY_SETTINGS = [
 ]
 
 // ============================================================================
+// Model aliases — shorthand names resolved to concrete model IDs.
+// Follows gemini-cli's alias pattern (models.ts).
+// ============================================================================
+
+const MODEL_ALIASES: Record<string, string> = {
+  'gemini-auto':  'gemini-2.5-pro',
+  'gemini-pro':   'gemini-2.5-pro',
+  'gemini-flash': 'gemini-2.5-flash',
+  'gemini-lite':  'gemini-2.5-flash-lite',
+}
+
+/**
+ * Fallback chain for automatic model downgrade on 429/quota errors.
+ * Each model maps to the next cheaper model to try.
+ */
+const FALLBACK_CHAIN: Record<string, string> = {
+  'gemini-2.5-pro':        'gemini-2.5-flash',
+  'gemini-2.5-flash':      'gemini-2.5-flash-lite',
+  'gemini-3.1-pro-preview': 'gemini-2.5-pro',
+  'gemini-3-pro-preview':  'gemini-2.5-pro',
+  'gemini-3-flash-preview': 'gemini-2.5-flash',
+}
+
+// ============================================================================
 // Gemini model context window limits
 // ============================================================================
 
@@ -47,18 +71,36 @@ const GEMINI_MODEL_LIMITS: Record<string, number> = {
   'gemini-2.5-flash-lite': 262_144,
   'gemini-2.0-flash': 1_048_576,
   'gemini-2.0-flash-lite': 262_144,
+  'gemini-3.1-pro-preview': 1_048_576,
+  'gemini-3-pro-preview': 1_048_576,
+  'gemini-3-flash-preview': 1_048_576,
 }
 
 // ============================================================================
 // GeminiProvider
 // ============================================================================
 
+// ============================================================================
+// Context caching — auto-cache long system prompts to reduce cost.
+// Gemini charges ~4x less for cached tokens vs. uncached.
+// Minimum content size for caching: 4096 tokens (~16K chars).
+// ============================================================================
+
+const CACHE_MIN_CHARS = 16_000  // ~4096 tokens at 4 chars/token
+const CACHE_TTL_SECONDS = 3600  // 1 hour default TTL
+
 export class GeminiProvider implements LLMProvider {
   readonly type = 'gemini' as const
   private clientInstance: any = null
   private toolCallIdMap = new ToolCallIdMap()
 
+  // Context caching state
+  private cachedContentName: string | null = null
+  private cachedSystemHash: string | null = null
+
   supportsModel(model: string): boolean {
+    // Exact alias match or prefix match
+    if (MODEL_ALIASES[model]) return true
     return /^(gemini-|vertex\/)/.test(model)
   }
 
@@ -90,10 +132,57 @@ export class GeminiProvider implements LLMProvider {
 
   /**
    * Resolve the actual model name for the API.
-   * Strips prefixes like 'vertex/' if present.
+   * 1. Resolve aliases (gemini-auto → gemini-2.5-pro)
+   * 2. Strip prefixes (vertex/gemini-2.5-pro → gemini-2.5-pro)
    */
   private resolveModelName(model: string): string {
-    return model.replace(/^vertex\//, '')
+    const stripped = model.replace(/^vertex\//, '')
+    return MODEL_ALIASES[stripped] ?? stripped
+  }
+
+  /**
+   * Get the fallback model for automatic downgrade on 429 errors.
+   * Returns null if no fallback is available.
+   */
+  private getFallbackModel(model: string): string | null {
+    return FALLBACK_CHAIN[model] ?? null
+  }
+
+  /**
+   * Attempt to auto-cache the system prompt if it's large enough.
+   * Returns the cached content resource name, or null if caching isn't applicable.
+   */
+  private async tryAutoCache(
+    model: string,
+    systemText: string | undefined,
+  ): Promise<string | null> {
+    if (!systemText || systemText.length < CACHE_MIN_CHARS) return null
+
+    // Check if we already have a valid cache for this exact system prompt
+    const { createHash } = await import('crypto')
+    const hash = createHash('sha256').update(systemText).digest('hex').slice(0, 16)
+
+    if (this.cachedContentName && this.cachedSystemHash === hash) {
+      return this.cachedContentName
+    }
+
+    try {
+      const client = await this.getClient()
+      const result = await client.caches.create({
+        model,
+        config: {
+          contents: [{ role: 'user', parts: [{ text: systemText }] }],
+          ttl: `${CACHE_TTL_SECONDS}s`,
+          displayName: `open-agent-sdk-${hash}`,
+        },
+      })
+      this.cachedContentName = result.name
+      this.cachedSystemHash = hash
+      return result.name
+    } catch {
+      // Caching not available (free tier, unsupported model) — proceed without
+      return null
+    }
   }
 
   /**
@@ -101,10 +190,12 @@ export class GeminiProvider implements LLMProvider {
    * Centralizes config construction for both streaming and non-streaming calls.
    * Supports Gemini-specific features via extra params:
    *   - geminiGrounding: boolean — enable Google Search grounding
-   *   - geminiCachedContent: string — cached content resource name
+   *   - geminiCachedContent: string — cached content resource name (manual)
+   *   - geminiAutoCache: boolean — auto-cache system prompts (default: false)
    *   - geminiThinkingBudget: number — override thinking token budget
    *   - geminiResponseMimeType: string — e.g. 'application/json' for structured output
    *   - geminiResponseSchema: object — JSON schema for structured output
+   *   - geminiCodeExecution: boolean — enable native code execution
    */
   private buildConfig(params: LLMCreateParams, tools: any[]) {
     const systemInstruction = toGeminiSystemInstruction(params.system)
@@ -119,13 +210,21 @@ export class GeminiProvider implements LLMProvider {
       ? [{ googleSearch: {} }]
       : undefined
 
-    // Build tools array: function declarations + optional google search
+    // Native code execution (Gemini runs Python in sandbox)
+    const codeExecution = (params as any).geminiCodeExecution
+      ? [{ codeExecution: {} }]
+      : undefined
+
+    // Build tools array: function declarations + optional google search + code execution
     const toolsConfig: any[] = []
     if (tools.length > 0) {
       toolsConfig.push({ functionDeclarations: tools })
     }
     if (googleSearch) {
       toolsConfig.push(...googleSearch)
+    }
+    if (codeExecution) {
+      toolsConfig.push(...codeExecution)
     }
 
     return {
@@ -155,6 +254,17 @@ export class GeminiProvider implements LLMProvider {
     const client = await this.getClient()
     const model = this.resolveModelName(params.model)
 
+    // Auto-cache system prompt if enabled and not already manually cached
+    if ((params as any).geminiAutoCache && !(params as any).geminiCachedContent) {
+      const systemText = typeof params.system === 'string' ? params.system
+        : Array.isArray(params.system) ? params.system.map((b: any) => b.text || b).join('\n\n')
+        : undefined
+      const cachedName = await this.tryAutoCache(model, systemText)
+      if (cachedName) {
+        ;(params as any).geminiCachedContent = cachedName
+      }
+    }
+
     const contents = toGeminiContents(params.messages, this.toolCallIdMap)
     const tools = toGeminiFunctionDeclarations(params.tools ?? [])
     const config = this.buildConfig(params, tools)
@@ -176,20 +286,53 @@ export class GeminiProvider implements LLMProvider {
     const client = await this.getClient()
     const model = this.resolveModelName(params.model)
 
+    // Auto-cache system prompt if enabled
+    if ((params as any).geminiAutoCache && !(params as any).geminiCachedContent) {
+      const systemText = typeof params.system === 'string' ? params.system
+        : Array.isArray(params.system) ? params.system.map((b: any) => b.text || b).join('\n\n')
+        : undefined
+      const cachedName = await this.tryAutoCache(model, systemText)
+      if (cachedName) {
+        ;(params as any).geminiCachedContent = cachedName
+      }
+    }
+
     const contents = toGeminiContents(params.messages, this.toolCallIdMap)
     const tools = toGeminiFunctionDeclarations(params.tools ?? [])
     const config = this.buildConfig(params, tools)
 
     let stream: AsyncIterable<any>
+    let activeModel = model
     try {
       const result = await client.models.generateContentStream({
-        model,
+        model: activeModel,
         contents,
         config,
       })
       stream = result
     } catch (error: any) {
-      throw this.toAnthropicError(error)
+      // Auto-fallback on 429 (quota exhausted) — try cheaper model
+      const status = error.status || error.code || error.httpStatusCode
+      if (status === 429 || status === 'RESOURCE_EXHAUSTED') {
+        const fallback = this.getFallbackModel(activeModel)
+        if (fallback) {
+          try {
+            activeModel = fallback
+            const result = await client.models.generateContentStream({
+              model: activeModel,
+              contents,
+              config,
+            })
+            stream = result
+          } catch (fallbackError: any) {
+            throw this.toAnthropicError(fallbackError)
+          }
+        } else {
+          throw this.toAnthropicError(error)
+        }
+      } else {
+        throw this.toAnthropicError(error)
+      }
     }
 
     // ── Translate Gemini chunks → Anthropic stream events ──
@@ -259,6 +402,39 @@ export class GeminiProvider implements LLMProvider {
               type: 'content_block_stop',
               index: contentIndex,
             } as any
+            contentIndex++
+          }
+
+          // ── Executable code (Gemini code execution) ──
+          if (part.executableCode) {
+            yield {
+              type: 'content_block_start',
+              index: contentIndex,
+              content_block: { type: 'text', text: '' },
+            } as any
+            yield {
+              type: 'content_block_delta',
+              index: contentIndex,
+              delta: { type: 'text_delta', text: `\n\`\`\`${part.executableCode.language || 'python'}\n${part.executableCode.code}\n\`\`\`\n` },
+            } as any
+            yield { type: 'content_block_stop', index: contentIndex } as any
+            contentIndex++
+          }
+
+          // ── Code execution result ──
+          if (part.codeExecutionResult) {
+            yield {
+              type: 'content_block_start',
+              index: contentIndex,
+              content_block: { type: 'text', text: '' },
+            } as any
+            const outcome = part.codeExecutionResult.outcome === 'OUTCOME_OK' ? '' : `[${part.codeExecutionResult.outcome}] `
+            yield {
+              type: 'content_block_delta',
+              index: contentIndex,
+              delta: { type: 'text_delta', text: `\n**Output:**\n\`\`\`\n${outcome}${part.codeExecutionResult.output}\n\`\`\`\n` },
+            } as any
+            yield { type: 'content_block_stop', index: contentIndex } as any
             contentIndex++
           }
 
@@ -355,6 +531,19 @@ export class GeminiProvider implements LLMProvider {
       }
       if (part.thought && part.text) {
         content.push({ type: 'thinking', thinking: part.text })
+      }
+      if (part.executableCode) {
+        content.push({
+          type: 'text',
+          text: `\n\`\`\`${part.executableCode.language || 'python'}\n${part.executableCode.code}\n\`\`\`\n`,
+        })
+      }
+      if (part.codeExecutionResult) {
+        const outcome = part.codeExecutionResult.outcome === 'OUTCOME_OK' ? '' : `[${part.codeExecutionResult.outcome}] `
+        content.push({
+          type: 'text',
+          text: `\n**Output:**\n\`\`\`\n${outcome}${part.codeExecutionResult.output}\n\`\`\`\n`,
+        })
       }
       if (part.functionCall) {
         hasFunctionCalls = true
