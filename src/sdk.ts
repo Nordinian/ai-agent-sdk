@@ -46,6 +46,19 @@ export { registerProvider, resolveProvider, isNonAnthropicModel } from './servic
 export { AnthropicProvider } from './services/api/providers/anthropic.js'
 export { GeminiProvider } from './services/api/providers/gemini.js'
 export { OpenAICompatProvider } from './services/api/providers/openai-compat.js'
+export { sanitizeEmptyToolResults, sanitizeHistoryForProvider } from './services/api/providers/sanitize.js'
+
+// Re-export agent robustness modules
+export { LoopDetector, loopBreakMessage } from './services/loopDetection.js'
+export type { LoopDetectionResult, LoopType } from './services/loopDetection.js'
+export { checkContextOverflow } from './services/contextOverflowGuard.js'
+export type { OverflowCheckResult } from './services/contextOverflowGuard.js'
+export {
+  estimateTextTokens,
+  estimateMessagesTokens,
+  estimateMediaTokens,
+  getProviderContextWindow,
+} from './services/providerTokenEstimation.js'
 
 // Re-export MCP utilities
 export { connectToServer as connectMCPServer } from './services/mcp/client.js'

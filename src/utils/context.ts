@@ -95,6 +95,18 @@ export function getContextWindowForModel(
       return antModel.contextWindow
     }
   }
+
+  // Non-Anthropic models: check provider-specific context window registry
+  try {
+    const { getProviderContextWindow } = require('../services/providerTokenEstimation.js')
+    const providerWindow = getProviderContextWindow(model)
+    if (providerWindow !== null) {
+      return providerWindow
+    }
+  } catch {
+    // Module not available — fall through to default
+  }
+
   return MODEL_CONTEXT_WINDOW_DEFAULT
 }
 

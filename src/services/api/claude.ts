@@ -26,6 +26,8 @@ import {
   isFirstPartyAnthropicBaseUrl,
 } from '../../utils/model/providers.js'
 import { resolveProvider, isNonAnthropicModel } from './registry.js'
+import { sanitizeEmptyToolResults, sanitizeHistoryForProvider } from './providers/sanitize.js'
+import { checkContextOverflow } from '../contextOverflowGuard.js'
 import {
   getAttributionHeader,
   getCLISyspromptPrefix,
@@ -1034,10 +1036,17 @@ async function* queryModelViaProvider(
   const provider = resolveProvider(options.model)
 
   // Build messages in Anthropic API format
-  const messagesForAPI = normalizeMessagesForAPI(
+  let messagesForAPI = normalizeMessagesForAPI(
     messages,
     options.model,
   )
+
+  // ── Edge case sanitization (ref: Claude Code production learnings) ──
+  // 1. Strip provider-specific blocks (thinking signatures, connector_text)
+  //    that would cause 400 errors or waste tokens on the target provider.
+  // 2. Fill empty tool results to prevent false stop-sequence sampling (~10%).
+  messagesForAPI = sanitizeHistoryForProvider(messagesForAPI, provider.type)
+  sanitizeEmptyToolResults(messagesForAPI)
 
   // Build system prompt as string
   const systemText = typeof systemPrompt === 'string'
@@ -1071,6 +1080,29 @@ async function* queryModelViaProvider(
     max_tokens: maxOutputTokens,
     temperature: options.temperatureOverride ?? 1,
     thinking,
+  }
+
+  // ── Context overflow pre-flight check (non-Anthropic providers) ──
+  // Anthropic models have their own server-side context management + auto-compact.
+  // For non-Anthropic providers, check estimated tokens before sending.
+  if (isNonAnthropicModel(options.model)) {
+    const overflowCheck = checkContextOverflow(
+      options.model,
+      messagesForAPI,
+      systemText,
+      toolDefs,
+    )
+    if (overflowCheck.status === 'overflow') {
+      // Yield error and abort — let the agent loop trigger compaction
+      yield {
+        type: 'system',
+        subtype: 'api_error' as const,
+        error: new Error(overflowCheck.message),
+        format: 'text',
+        message: overflowCheck.message,
+      } as any
+      return
+    }
   }
 
   // Collect content blocks to build the final AssistantMessage

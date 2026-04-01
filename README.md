@@ -223,6 +223,47 @@ The engine uses Anthropic's message format internally. Each provider translates 
 | **Multi-Agent** | Leader/Teammate teams, Git worktree isolation |
 | **MCP Client** | stdio, SSE, HTTP transports |
 | **Tool Execution** | Concurrent batching for read-only, serial for mutations |
+| **Loop Detection** | Hash-based tool repetition + content chanting detection |
+| **Context Overflow Guard** | Pre-flight token estimation before API calls |
+| **Provider Token Estimation** | Per-provider heuristic token counting (ASCII/CJK-aware) |
+
+### Agent Robustness (v0.2.1)
+
+Built-in modules to keep agents productive during long tasks:
+
+```typescript
+import {
+  LoopDetector,
+  loopBreakMessage,
+  checkContextOverflow,
+  estimateTextTokens,
+  getProviderContextWindow,
+} from '@anthropic-ai/ai-agent-sdk'
+
+// Loop detection — detects infinite tool-calling loops
+const detector = new LoopDetector()
+const result = detector.checkAssistantMessage(assistantMessage)
+if (result.detected) {
+  console.log(loopBreakMessage(result))  // inject corrective message
+  detector.clearDetection()               // allow retry with new approach
+}
+
+// Context overflow guard — pre-check before API calls
+const check = checkContextOverflow('gemini-2.5-flash', messages, systemPrompt, tools)
+if (check.status === 'overflow') {
+  console.log(check.message)  // "Context overflow: estimated 1.2M tokens..."
+}
+
+// Token estimation — provider-aware heuristics
+estimateTextTokens('Hello world', 'gemini')      // ASCII: 0.25 tokens/char
+estimateTextTokens('你好世界', 'gemini')           // CJK: 1.3 tokens/char
+getProviderContextWindow('gemini-2.5-pro')         // 1,048,576
+getProviderContextWindow('gpt-4o')                 // 128,000
+```
+
+**Auto-compact** automatically triggers for all providers when context approaches the limit:
+- **Anthropic models**: Full summarization-based compaction (uses Claude)
+- **Non-Anthropic models**: Truncation-based compaction (preserves last 30% of conversation)
 
 ## Custom providers
 

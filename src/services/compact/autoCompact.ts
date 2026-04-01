@@ -13,6 +13,7 @@ import { hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
+import { isNonAnthropicModel } from '../api/registry.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
@@ -310,6 +311,69 @@ export async function autoCompactIfNeeded(
     }
   }
 
+  // ── Non-Anthropic Provider: truncation-based compaction ──
+  // compactConversation uses Claude to generate summaries, which is not
+  // available for Gemini/OpenAI/DeepSeek models. Instead, truncate older
+  // messages while preserving recent context (last 30% of conversation).
+  // This follows gemini-cli's COMPRESSION_PRESERVE_THRESHOLD = 0.3.
+  if (isNonAnthropicModel(model)) {
+    try {
+      const preserveFraction = 0.3
+      const preserveCount = Math.max(
+        4, // Keep at least 4 messages (2 user + 2 assistant turns)
+        Math.ceil(messages.length * preserveFraction),
+      )
+
+      // Find a safe split point at a user message boundary
+      // (don't split in the middle of a tool_use → tool_result pair)
+      let splitIndex = messages.length - preserveCount
+      while (splitIndex > 0 && splitIndex < messages.length) {
+        const msg = messages[splitIndex]
+        if (msg?.type === 'user') break
+        splitIndex++
+      }
+
+      if (splitIndex <= 0 || splitIndex >= messages.length - 2) {
+        // Can't truncate meaningfully — not enough history
+        return { wasCompacted: false }
+      }
+
+      // Build a synthetic system message summarizing what was truncated
+      const truncatedCount = splitIndex
+      const truncationNotice = {
+        type: 'system' as const,
+        subtype: 'compact_boundary' as const,
+        format: 'text' as const,
+        message:
+          `[Context compacted: ${truncatedCount} earlier messages were truncated ` +
+          `to stay within the ${model} context window. ` +
+          `The conversation continues from the most recent context.]`,
+      }
+
+      // Replace messages in-place: truncation notice + preserved tail
+      const preserved = messages.slice(splitIndex)
+      messages.length = 0
+      messages.push(truncationNotice as any, ...preserved)
+
+      logForDebugging(
+        `autocompact (non-Anthropic truncation): removed ${truncatedCount} messages, preserved ${preserved.length}`,
+      )
+
+      return {
+        wasCompacted: true,
+        compactionResult: {
+          assistantSummary: `[Truncated ${truncatedCount} messages]`,
+          wasCompacted: true,
+        } as any,
+        consecutiveFailures: 0,
+      }
+    } catch (error) {
+      logError(error)
+      return { wasCompacted: false, consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1 }
+    }
+  }
+
+  // ── Anthropic Provider: full summarization-based compaction ──
   try {
     const compactionResult = await compactConversation(
       messages,

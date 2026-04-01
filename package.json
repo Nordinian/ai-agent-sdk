@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/Nordinian/ai-agent-sdk/issues"
   },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Open-source multi-model Agent SDK. Runs the full agent loop in-process with Claude, Gemini, GPT, DeepSeek, and 100+ models. Deploy anywhere: cloud, serverless, Docker, CI/CD.",
   "type": "module",
   "main": "./dist/sdk.js",
